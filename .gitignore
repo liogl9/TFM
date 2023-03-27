@@ -348,3 +348,12 @@ MigrationBackup/
 
 # Ionide (cross platform F# VS Code tools) working folder
 .ionide/
+
+YOLO/datasets
+YOLO/examples
+YOLO/fotos_base
+YOLO/GanResults
+
+YOLO/base_0.png
+*.code-workspace
+*.mp4
