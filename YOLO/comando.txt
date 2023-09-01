@@ -1,1 +1,2 @@
 python train.py --project yolo_real --name nano_sintec --img 640 --batch 8 --epochs 200 --data G1_a_sintec.yaml --weights yolov5n.pt --freeze 10
+python val.py --project yolo_real --name test_nano_sintec --img 640 --batch 8 --data test_sintec_real.yaml  --weights ./yolo_real/nano_sintec_train_val/weights/best.pt --task test --single-cls --verbose --save-txt --save-hybrid --save-conf --conf-thres=0.5 --max-det=10

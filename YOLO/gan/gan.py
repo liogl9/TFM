@@ -279,7 +279,7 @@ class Discriminator(nn.Module):
         x2 = self.contract2(x1)
         x3 = self.contract3(x2)
         xn = self.final(x3)
-        return xn
+        return 
 
 
 adv_criterion = nn.MSELoss()
