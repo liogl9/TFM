@@ -1,10 +1,6 @@
-import numpy as np
-import torch.nn.functional as F
-import torchvision
 from PIL import Image
 from torch.utils.data import Dataset
 import os
-import random
 import glob
 import torch
 from torch import nn
@@ -13,12 +9,15 @@ from torchvision import transforms
 from torchvision.utils import make_grid
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
-torch.manual_seed(0)
+torch.manual_seed(42)
+import csv
+import pandas as pd
+import numpy as np
 
 im_num = 0
+T_NUM = "T12"
 
-
-def show_tensor_images(image_tensor, curr_step, real_fake, num_images=25, size=(1, 28, 28)):
+def show_tensor_images(image_tensor, epoch, real_fake, num_images=25, size=(1, 28, 28)):
     '''
     Function for visualizing images: Given a tensor of images, number of images, and
     size per image, plots and prints the images in an uniform grid.
@@ -26,29 +25,50 @@ def show_tensor_images(image_tensor, curr_step, real_fake, num_images=25, size=(
     image_tensor = (image_tensor + 1) / 2
     image_shifted = image_tensor
     image_unflat = image_shifted.detach().cpu().view(-1, *size)
+    real_0 = image_unflat[0,:,:,:]
+    sintec_0 = image_unflat[1,:,:,:]
     image_grid = make_grid(image_unflat[:num_images], nrow=5)
-    plt.imshow(image_grid.permute(1, 2, 0).squeeze())
-    plt.savefig(os.path.join(os.getcwd(), 'GanResults',
-                '{:06d}_{}.png'.format(curr_step, real_fake)))
+    fig_0,ax_0 = plt.subplots()
+    ax_0.imshow(image_grid.permute(1, 2, 0).squeeze())
+    fig_0.savefig(os.path.join(os.getcwd(), 'GanResults', 'images',T_NUM,
+                '{:05d}_{}_batch.png'.format(epoch, real_fake)))
+    if real_fake == 'real':
+        fig_1,ax_1 = plt.subplots(figsize=(2.91, 2.91))
+        ax_1.imshow(sintec_0.permute(1, 2, 0).squeeze())
+        ax_1.axis('off')
+        fig_1.savefig(os.path.join(os.getcwd(), 'GanResults', 'images',T_NUM,
+                    '{:05d}_sintec.png'.format(epoch)), bbox_inches='tight', pad_inches=0)
+        fig_2,ax_2 = plt.subplots(figsize=(2.91, 2.91))
+        ax_2.imshow(real_0.permute(1, 2, 0).squeeze())
+        ax_2.axis('off')
+        fig_2.savefig(os.path.join(os.getcwd(), 'GanResults', 'images',T_NUM,
+                    '{:05d}_real.png'.format(epoch)), bbox_inches='tight', pad_inches=0)
+    else:
+        fig_1,ax_1 = plt.subplots(figsize=(2.91, 2.91))
+        ax_1.imshow(sintec_0.permute(1, 2, 0).squeeze())
+        ax_1.axis('off')
+        fig_1.savefig(os.path.join(os.getcwd(), 'GanResults', 'images',T_NUM,
+                    '{:05d}_sintec2real.png'.format(epoch)), bbox_inches='tight', pad_inches=0)
+        fig_2,ax_2 = plt.subplots(figsize=(2.91, 2.91))
+        ax_2.axis('off')
+        ax_2.imshow(real_0.permute(1, 2, 0).squeeze())
+        fig_2.savefig(os.path.join(os.getcwd(), 'GanResults', 'images',T_NUM,
+                    '{:05d}_real2sintec.png'.format(epoch)), bbox_inches='tight', pad_inches=0)
     # plt.show()
     plt.pause(3)
-    plt.close()
-
-
-# Inspired by https://github.com/aitorzip/PyTorch-CycleGAN/blob/master/datasets.py
+    plt.close('all')
+    
 
 class ImageDataset(Dataset):
     def __init__(self, root, transform=None, mode='train'):
         self.transform = transform
         self.files_A = sorted(glob.glob(os.path.join(
-            root, 'G1_a_regressor_saliency', 'images', mode) + '\\*.*'))
+            root, 'Gan_Real', 'images', mode, '*.*')))
         self.files_B = sorted(
-            glob.glob(os.path.join(root, 'G1_a_real_360', 'images_regressor_minSize', mode) + '\\*.*'))
-        if len(self.files_A) > len(self.files_B):
-            self.files_A, self.files_B = self.files_B, self.files_A
+            glob.glob(os.path.join(root, 'Gan_Sintec_0_30', 'images', mode, '*.*')))
+        # if len(self.files_A) > len(self.files_B):
+        #     self.files_A, self.files_B = self.files_B, self.files_A
         self.new_perm()
-        assert len(
-            self.files_A) > 0, "Make sure you downloaded the horse2zebra images!"
 
     def new_perm(self):
         self.randperm = torch.randperm(len(self.files_B))[:len(self.files_A)]
@@ -69,7 +89,43 @@ class ImageDataset(Dataset):
     def __len__(self):
         return min(len(self.files_A), len(self.files_B))
 
-
+class DemodConv2d(nn.Module):
+    def __init__(self, input_channels, output_channels, kernel_size=3, stride=1, padding=0, bias=False, dilation=1) -> None:
+        super().__init__()
+        
+        self.epsilon = 1e-8
+        self.kernel_size = kernel_size
+        self.in_channel = input_channels
+        self.out_channel = output_channels
+        
+        self.weights = nn.Parameter(torch.randn(1,output_channels,input_channels,kernel_size,kernel_size))
+        self.bias = None
+        if bias:
+            self.bias = nn.Parameter(torch.randn(output_channels))
+            
+        self.stride = stride
+        self.padding = padding
+        self.dilation = dilation
+        
+    def forward(self, input):
+        batch, in_channel, height, width = input.shape
+        
+        demod = torch.rsqrt(self.weights.pow(2).sum([2,3,4])+ self.epsilon)
+        weight = self.weights * demod.view(batch,self.out_channel,1,1,1)
+        
+        weight = weight.view(batch*self.out_channel,
+                             in_channel,
+                             self.kernel_size,
+                             self.kernel_size)
+        input = input.view(1,batch*in_channel,height,width)
+        if self.bias is None:
+            out = torch.conv2d(input,weight=weight,padding=self.padding,groups=batch,dilation=self.dilation,stride=self.stride)
+        else:
+            out = torch.conv2d(input,weight=weight,bias=self.bias, padding=self.padding,groups=batch,dilation=self.dilation,stride=self.stride)
+        _, _, height, width = out.shape  
+        out = out.view(batch, self.out_channel,height,width)
+        return out
+    
 class ResidualBlock(nn.Module):
     '''
     ResidualBlock Class:
@@ -81,11 +137,10 @@ class ResidualBlock(nn.Module):
 
     def __init__(self, input_channels):
         super(ResidualBlock, self).__init__()
-        self.conv1 = nn.Conv2d(input_channels, input_channels,
-                               kernel_size=3, padding=1, padding_mode='reflect')
-        self.conv2 = nn.Conv2d(input_channels, input_channels,
-                               kernel_size=3, padding=1, padding_mode='reflect')
-        self.instancenorm = nn.InstanceNorm2d(input_channels)
+        self.conv1 = DemodConv2d(input_channels, input_channels,
+                               kernel_size=3, padding=1)
+        self.conv2 = DemodConv2d(input_channels, input_channels,
+                               kernel_size=3, padding=1)
         self.activation = nn.ReLU()
 
     def forward(self, x):
@@ -97,12 +152,9 @@ class ResidualBlock(nn.Module):
         '''
         original_x = x.clone()
         x = self.conv1(x)
-        x = self.instancenorm(x)
         x = self.activation(x)
         x = self.conv2(x)
-        x = self.instancenorm(x)
         return original_x + x
-
 
 class ContractingBlock(nn.Module):
     '''
@@ -114,12 +166,10 @@ class ContractingBlock(nn.Module):
 
     def __init__(self, input_channels, use_bn=True, kernel_size=3, activation='relu'):
         super(ContractingBlock, self).__init__()
-        self.conv1 = nn.Conv2d(input_channels, input_channels * 2,
-                               kernel_size=kernel_size, padding=1, stride=2, padding_mode='reflect')
+        self.conv1 = DemodConv2d(input_channels, input_channels * 2,
+                               kernel_size=kernel_size, padding=1, stride=2)
         self.activation = nn.ReLU() if activation == 'relu' else nn.LeakyReLU(0.2)
-        if use_bn:
-            self.instancenorm = nn.InstanceNorm2d(input_channels * 2)
-        self.use_bn = use_bn
+
 
     def forward(self, x):
         '''
@@ -129,11 +179,8 @@ class ContractingBlock(nn.Module):
             x: image tensor of shape (batch size, channels, height, width)
         '''
         x = self.conv1(x)
-        if self.use_bn:
-            x = self.instancenorm(x)
         x = self.activation(x)
         return x
-
 
 class ExpandingBlock(nn.Module):
     '''
@@ -148,9 +195,11 @@ class ExpandingBlock(nn.Module):
         super(ExpandingBlock, self).__init__()
         self.conv1 = nn.ConvTranspose2d(
             input_channels, input_channels // 2, kernel_size=3, stride=2, padding=1, output_padding=1)
-        if use_bn:
-            self.instancenorm = nn.InstanceNorm2d(input_channels // 2)
-        self.use_bn = use_bn
+        # self.up1 = nn.Upsample(scale_factor = 2, mode='nearest'),
+        # self.ref1 = nn.ReflectionPad2d(1)
+        # self.conv2 = nn.Conv2d(input_channels, int(input_channels / 2),
+        #                                      kernel_size=3, stride=1, padding=0)
+        
         self.activation = nn.ReLU()
 
     def forward(self, x):
@@ -163,11 +212,13 @@ class ExpandingBlock(nn.Module):
                     for the skip connection
         '''
         x = self.conv1(x)
-        if self.use_bn:
-            x = self.instancenorm(x)
+        
+        # x = self.up1(x)
+        # x = self.ref1(x)
+        # x = self.conv2(x)
+        
         x = self.activation(x)
         return x
-
 
 class FeatureMapBlock(nn.Module):
     '''
@@ -181,8 +232,8 @@ class FeatureMapBlock(nn.Module):
 
     def __init__(self, input_channels, output_channels):
         super(FeatureMapBlock, self).__init__()
-        self.conv = nn.Conv2d(input_channels, output_channels,
-                              kernel_size=7, padding=3, padding_mode='reflect')
+        self.conv = DemodConv2d(input_channels, output_channels,
+                              kernel_size=7, padding=3)
 
     def forward(self, x):
         '''
@@ -193,7 +244,6 @@ class FeatureMapBlock(nn.Module):
         '''
         x = self.conv(x)
         return x
-
 
 class Generator(nn.Module):
     '''
@@ -235,22 +285,21 @@ class Generator(nn.Module):
             x: image tensor of shape (batch size, channels, height, width)
         '''
         x0 = self.upfeature(x)
-        x1 = self.contract1(x0)
-        x2 = self.contract2(x1)
-        x3 = self.res0(x2)
-        x4 = self.res1(x3)
-        x5 = self.res2(x4)
-        x6 = self.res3(x5)
-        x7 = self.res4(x6)
-        x8 = self.res5(x7)
-        x9 = self.res6(x8)
-        x10 = self.res7(x9)
-        x11 = self.res8(x10)
-        x12 = self.expand2(x11)
-        x13 = self.expand3(x12)
-        xn = self.downfeature(x13)
+        x0 = self.contract1(x0)
+        x0 = self.contract2(x0)
+        x0 = self.res0(x0)
+        x0 = self.res1(x0)
+        x0 = self.res2(x0)
+        x0 = self.res3(x0)
+        x0 = self.res4(x0)
+        x0 = self.res5(x0)
+        x0 = self.res6(x0)
+        x0 = self.res7(x0)
+        x0 = self.res8(x0)
+        x0 = self.expand2(x0)
+        x0 = self.expand3(x0)
+        xn = self.downfeature(x0)
         return self.tanh(xn)
-
 
 class Discriminator(nn.Module):
     '''
@@ -279,32 +328,33 @@ class Discriminator(nn.Module):
         x2 = self.contract2(x1)
         x3 = self.contract3(x2)
         xn = self.final(x3)
-        return 
-
+        return xn
 
 adv_criterion = nn.MSELoss()
 recon_criterion = nn.L1Loss()
 
-n_epochs = 100
+n_epochs = 500
 dim_A = 3
 dim_B = 3
-display_step = 50
+display_step = 200
 batch_size = 1
-lr = 0.00005
-load_shape = 286
-target_shape = 152
+lr = 5e-4
+load_shape = 224
+target_shape = 224
 device = 'cuda'
 
 transform = transforms.Compose([
     # transforms.Resize(load_shape),
     transforms.Resize(target_shape),
     # transforms.RandomCrop(target_shape),
-    transforms.RandomHorizontalFlip(),
+    # transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
 ])
 
-dataset = ImageDataset(os.path.join(
+dataset_train = ImageDataset(os.path.join(
     os.getcwd(), "datasets"), transform=transform)
+dataset_test = ImageDataset(os.path.join(
+    os.getcwd(), "datasets"), transform=transform, mode="test")
 
 gen_AB = Generator(dim_A, dim_B).to(device)
 gen_BA = Generator(dim_B, dim_A).to(device)
@@ -327,7 +377,7 @@ def weights_init(m):
 # Feel free to change pretrained to False if you're training the model from scratch
 pretrained = False
 if pretrained:
-    pre_dict = torch.load('./cycleGAN_100000.pth')
+    pre_dict = torch.load('./YOLO/cycleGAN_100000.pth')
     gen_AB.load_state_dict(pre_dict['gen_AB'])
     gen_BA.load_state_dict(pre_dict['gen_BA'])
     gen_opt.load_state_dict(pre_dict['gen_opt'])
@@ -340,10 +390,6 @@ else:
     gen_BA = gen_BA.apply(weights_init)
     disc_A = disc_A.apply(weights_init)
     disc_B = disc_B.apply(weights_init)
-
-# UNQ_C1 (UNIQUE CELL IDENTIFIER, DO NOT EDIT)
-# GRADED FUNCTION: get_disc_loss
-
 
 def get_disc_loss(real_X, fake_X, disc_X, adv_criterion):
     '''
@@ -368,11 +414,6 @@ def get_disc_loss(real_X, fake_X, disc_X, adv_criterion):
     #### END CODE HERE ####
     return disc_loss
 
-
-# UNQ_C2 (UNIQUE CELL IDENTIFIER, DO NOT EDIT)
-# GRADED FUNCTION: get_gen_adversarial_loss
-
-
 def get_gen_adversarial_loss(real_X, disc_Y, gen_XY, adv_criterion):
     '''
     Return the adversarial loss of the generator given inputs
@@ -395,10 +436,6 @@ def get_gen_adversarial_loss(real_X, disc_Y, gen_XY, adv_criterion):
     #### END CODE HERE ####
     return adversarial_loss, fake_Y
 
-# UNQ_C3 (UNIQUE CELL IDENTIFIER, DO NOT EDIT)
-# GRADED FUNCTION: get_identity_loss
-
-
 def get_identity_loss(real_X, gen_YX, identity_criterion):
     '''
     Return the identity loss of the generator given inputs
@@ -416,10 +453,6 @@ def get_identity_loss(real_X, gen_YX, identity_criterion):
     identity_loss = identity_criterion(identity_X, real_X)
     #### END CODE HERE ####
     return identity_loss, identity_X
-
-# UNQ_C4 (UNIQUE CELL IDENTIFIER, DO NOT EDIT)
-# GRADED FUNCTION: get_cycle_consistency_loss
-
 
 def get_cycle_consistency_loss(real_X, fake_Y, gen_YX, cycle_criterion):
     '''
@@ -440,11 +473,7 @@ def get_cycle_consistency_loss(real_X, fake_Y, gen_YX, cycle_criterion):
     #### END CODE HERE ####
     return cycle_loss, cycle_X
 
-# UNQ_C5 (UNIQUE CELL IDENTIFIER, DO NOT EDIT)
-# GRADED FUNCTION: get_gen_loss
-
-
-def get_gen_loss(real_A, real_B, gen_AB, gen_BA, disc_A, disc_B, adv_criterion, identity_criterion, cycle_criterion, lambda_identity=0.1, lambda_cycle=10):
+def get_gen_loss(real_A, real_B, gen_AB, gen_BA, disc_A, disc_B, adv_criterion, identity_criterion, cycle_criterion, lambda_identity=0.05, lambda_cycle=10):
     '''
     Return the loss of the generator given inputs.
     Parameters:
@@ -482,11 +511,11 @@ def get_gen_loss(real_A, real_B, gen_AB, gen_BA, disc_A, disc_B, adv_criterion, 
     gen_adversarial_loss = adv_loss_BA + adv_loss_AB
 
     # Identity Loss -- get_identity_loss(real_X, gen_YX, identity_criterion)
-    identity_loss_A, identity_A = get_identity_loss(
-        real_A, gen_BA, identity_criterion)
-    identity_loss_B, identity_B = get_identity_loss(
-        real_B, gen_AB, identity_criterion)
-    gen_identity_loss = identity_loss_A + identity_loss_B
+    # identity_loss_A, identity_A = get_identity_loss(
+    #     real_A, gen_BA, identity_criterion)
+    # identity_loss_B, identity_B = get_identity_loss(
+    #     real_B, gen_AB, identity_criterion)
+    # gen_identity_loss = identity_loss_A + identity_loss_B
 
     # Cycle-consistency Loss -- get_cycle_consistency_loss(real_X, fake_Y, gen_YX, cycle_criterion)
     cycle_loss_BA, cycle_A = get_cycle_consistency_loss(
@@ -496,29 +525,33 @@ def get_gen_loss(real_A, real_B, gen_AB, gen_BA, disc_A, disc_B, adv_criterion, 
     gen_cycle_loss = cycle_loss_BA + cycle_loss_AB
 
     # Total loss
-    gen_loss = lambda_identity * gen_identity_loss + \
-        lambda_cycle * gen_cycle_loss + gen_adversarial_loss
+    # gen_loss = lambda_identity * gen_identity_loss +  lambda_cycle * gen_cycle_loss + gen_adversarial_loss
+    gen_loss = lambda_cycle * gen_cycle_loss + gen_adversarial_loss
     #### END CODE HERE ####
     return gen_loss, fake_A, fake_B
 
-
 plt.rcParams["figure.figsize"] = (10, 10)
-
 
 def train(save_model=False):
     mean_generator_loss = 0
     mean_discriminator_loss = 0
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    cur_step = 0
-
+    dataloader_train = DataLoader(dataset_train, batch_size=batch_size, shuffle=True)
+    train_size = len(dataloader_train)
+    dataloader_test = DataLoader(dataset_test, batch_size=batch_size, shuffle=True)
+    test_size = len(dataloader_test)
+    gen_loss_list_train = []
+    gen_loss_list_test = []
+    disc_loss_list_train = []
+    disc_loss_list_test = []
+    show_a = None
+    show_b = None
     for epoch in range(n_epochs):
         # Dataloader returns the batches
         # for image, _ in tqdm(dataloader):
-        for real_A, real_B in tqdm(dataloader):
+        for real_A, real_B in tqdm(dataloader_train):
             # image_width = image.shape[3]
             real_A = nn.functional.interpolate(real_A, size=target_shape)
             real_B = nn.functional.interpolate(real_B, size=target_shape)
-            cur_batch_size = len(real_A)
             real_A = real_A.to(device)
             real_B = real_B.to(device)
 
@@ -547,32 +580,96 @@ def train(save_model=False):
             gen_opt.step()  # Update optimizer
 
             # Keep track of the average discriminator loss
-            mean_discriminator_loss += disc_A_loss.item() / display_step
+            mean_discriminator_loss += disc_A_loss.item()/train_size
+            
             # Keep track of the average generator loss
-            mean_generator_loss += gen_loss.item() / display_step
+            mean_generator_loss += gen_loss.item()/train_size
+            show_a = real_A
+            show_b = real_B
+    
+        gen_loss_list_train.append(mean_generator_loss)
+        disc_loss_list_train.append(mean_discriminator_loss)
+        print(
+            f"Epoch {epoch}:Train Generator (U-Net) loss: {mean_generator_loss}, Discriminator loss: {mean_discriminator_loss}")
+        show_tensor_images(torch.cat([show_a, show_b]), epoch, 'real', size=(
+            dim_A, target_shape, target_shape))
+        show_tensor_images(torch.cat([fake_B, fake_A]), epoch, 'fake', size=(
+            dim_B, target_shape, target_shape))
+        mean_generator_loss = 0
+        mean_discriminator_loss = 0
+        
+        # You can change save_model to True if you'd like to save the model
+        if save_model:
+            torch.save({
+                'gen_AB': gen_AB.state_dict(),
+                'gen_BA': gen_BA.state_dict(),
+                'gen_opt': gen_opt.state_dict(),
+                'disc_A': disc_A.state_dict(),
+                'disc_A_opt': disc_A_opt.state_dict(),
+                'disc_B': disc_B.state_dict(),
+                'disc_B_opt': disc_B_opt.state_dict()
+            }, f"./GanResults/models/"+T_NUM+f"/cycleGAN_G1_a_{epoch}.pth")
+            
+        for real_A, real_B in tqdm(dataloader_test):
+            # image_width = image.shape[3]
+            real_A = nn.functional.interpolate(real_A, size=target_shape)
+            real_B = nn.functional.interpolate(real_B, size=target_shape)
+            real_A = real_A.to(device)
+            real_B = real_B.to(device)
 
-            ### Visualization code ###
-            if cur_step % display_step == 0:
-                print(
-                    f"Epoch {epoch}: Step {cur_step}: Generator (U-Net) loss: {mean_generator_loss}, Discriminator loss: {mean_discriminator_loss}")
-                show_tensor_images(torch.cat([real_A, real_B]), cur_step, 'real', size=(
-                    dim_A, target_shape, target_shape))
-                show_tensor_images(torch.cat([fake_B, fake_A]), cur_step, 'fake', size=(
-                    dim_B, target_shape, target_shape))
-                mean_generator_loss = 0
-                mean_discriminator_loss = 0
-                # You can change save_model to True if you'd like to save the model
-                if save_model:
-                    torch.save({
-                        'gen_AB': gen_AB.state_dict(),
-                        'gen_BA': gen_BA.state_dict(),
-                        'gen_opt': gen_opt.state_dict(),
-                        'disc_A': disc_A.state_dict(),
-                        'disc_A_opt': disc_A_opt.state_dict(),
-                        'disc_B': disc_B.state_dict(),
-                        'disc_B_opt': disc_B_opt.state_dict()
-                    }, f"cycleGAN_{cur_step}.pth")
-            cur_step += 1
+            ### Update discriminator A ###
+            with torch.no_grad():
+                fake_A = gen_BA(real_B)
+            disc_A_loss = get_disc_loss(real_A, fake_A, disc_A, adv_criterion)
 
+            ### Update discriminator B ###
+            with torch.no_grad():
+                fake_B = gen_AB(real_A)
+            disc_B_loss = get_disc_loss(real_B, fake_B, disc_B, adv_criterion)
 
-train()
+            ### Update generator ###
+            gen_loss, fake_A, fake_B = get_gen_loss(
+                real_A, real_B, gen_AB, gen_BA, disc_A, disc_B, adv_criterion, recon_criterion, recon_criterion
+            )
+            # Keep track of the average discriminator loss
+            mean_discriminator_loss += disc_A_loss.item() / test_size
+            
+            # Keep track of the average generator loss
+            mean_generator_loss += gen_loss.item() / test_size
+
+        ### Visualization code ###
+        gen_loss_list_test.append(mean_generator_loss)
+        disc_loss_list_test.append(mean_discriminator_loss)
+        
+        print(
+            f"Epoch {epoch}: Validation Generator (U-Net) loss: {mean_generator_loss}, Discriminator loss: {mean_discriminator_loss}")
+        mean_generator_loss = 0
+        mean_discriminator_loss = 0
+        
+        fig, ax = plt.subplots()
+        ax.plot(list(range(epoch+1)),gen_loss_list_train, label='Generator Train Loss')
+        ax.plot(list(range(epoch+1)),disc_loss_list_train, label='Discriminator Train Loss')
+        ax.plot(list(range(epoch+1)),gen_loss_list_test, label='Generator Test Loss')
+        ax.plot(list(range(epoch+1)),disc_loss_list_test, label='Discriminator Test Loss')
+        ax.set_title('Training/Test Loss')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
+        ax.legend()
+        fig.savefig('./GanResults/Loss/'+T_NUM+'/TrainLoss.png')
+        plt.close(fig)
+        
+        log_dict = {
+                "Gen_Train_loss": gen_loss_list_train,
+                "Gen_Val_loss": gen_loss_list_test,
+                "Disc_Train_loss": disc_loss_list_train,
+                "Disc_Val_loss": disc_loss_list_test,
+            }
+        df = pd.DataFrame(log_dict)
+        df.to_csv('./GanResults/Loss/'+T_NUM+'/TrainLoss.csv', index=False)
+
+if __name__ == "__main__":
+    if not os.path.exists(os.path.join(os.getcwd(), 'GanResults', 'images', T_NUM)):
+        os.makedirs(os.path.join(os.path.join(os.getcwd(), 'GanResults', 'images', T_NUM)))
+        os.makedirs(os.path.join(os.path.join(os.getcwd(), 'GanResults', 'Loss', T_NUM)))
+        os.makedirs(os.path.join(os.path.join(os.getcwd(), 'GanResults', 'models', T_NUM)))
+    train(save_model=True)

@@ -1,0 +1,6 @@
+train: ../datasets/G1_a_real_multi_0/images
+val: ../datasets/G1_a_real_multi_0/images
+
+nc: 1
+
+names: ["G1_a"]

@@ -1,0 +1,7 @@
+train: ../datasets
+val: ../datasets
+test: ../datasets/test_multi/images
+
+nc: 1
+
+names: ["G1_a"]
